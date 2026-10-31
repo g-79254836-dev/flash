@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Watch out, Flash! - Interactive Game</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- MediaPipe Libraries -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #1a202c; /* Fallback */
+            font-family: 'Inter', sans-serif;
+            user-select: none;
+        }
+        #webcam-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+        /* Flip the video feed horizontally for a mirror effect */
+        #output_canvas {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+        }
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 10;
+            pointer-events: none; /* Let pointer events pass through to canvas if needed */
+        }
+        /* Custom UI Elements */
+        .glass-panel {
+            background: rgba(255, 255, 255, 0.85);
+            backdrop-filter: blur(10px);
+            border-radius: 1rem;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+            pointer-events: auto;
+        }
+        
+        /* Gift Box Styles */
+        .gift-box {
+            position: absolute;
+            width: 320px;
+            padding: 15px;
+            background: rgba(255, 255, 255, 0.95);
+            border: 4px solid #f6ad55;
+            border-radius: 1rem;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.3);
+            text-align: center;
+            transition: all 0.3s ease;
+            pointer-events: auto; /* Allow JS bounding box detection */
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+        
+        .box-tl { top: 5%; left: 3%; }
+        .box-tr { top: 5%; right: 3%; }
+        .box-bl { bottom: 5%; left: 3%; }
+        .box-br { bottom: 5%; right: 3%; }
+
+        .gift-icon {
+            font-size: 3rem;
+            line-height: 1;
+            transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+
+        .gift-text {
+            font-size: 1.25rem;
+            font-weight: bold;
+            color: #2d3748;
+        }
+
+        .gift-box.active-hover {
+            border-color: #4299e1;
+            background: #ebf8ff;
+            transform: scale(1.05);
+            box-shadow: 0 10px 30px rgba(66, 153, 225, 0.6);
+        }
+
+        .gift-box.correct {
+            border-color: #48bb78;
+            background: #f0fff4;
+        }
+        
+        .gift-box.wrong {
+            border-color: #f56565;
+            background: #fff5f5;
+        }
+
+        @keyframes popOpen {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.2) rotate(5deg); }
+            100% { transform: scale(1) rotate(0deg); }
+        }
+
+        .animate-pop {
+            animation: popOpen 0.5s ease-out forwards;
+        }
+
+        /* Cursor Layer */
+        #cursor-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 20;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Camera/Canvas Layer -->
+    <div id="webcam-container">
+        <video id="input_video" style="display: none;"></video>
+        <canvas id="output_canvas"></canvas>
+    </div>
+
+    <!-- Hand Tracking Cursor Drawing -->
+    <canvas id="cursor-layer"></canvas>
+
+    <!-- UI Layer -->
+    <div id="ui-layer">
+        
+        <!-- Loading Screen -->
+        <div id="screen-loading" class="absolute inset-0 flex items-center justify-center bg-gray-900 bg-opacity-90 z-50">
+            <div class="text-center glass-panel p-10">
+                <h1 class="text-3xl font-bold text-blue-600 mb-4 animate-pulse">Loading AI Camera...</h1>
+                <p class="text-gray-600">Please allow camera access and wait a moment.</p>
+            </div>
+        </div>
+
+        <!-- Start Screen -->
+        <div id="screen-start" class="absolute inset-0 flex items-center justify-center bg-gray-900 bg-opacity-80 z-40 hidden">
+            <div class="glass-panel p-12 max-w-2xl text-center">
+                <h1 class="text-5xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-orange-400 to-red-600 mb-4">Watch out, Flash!</h1>
+                <p class="text-xl text-gray-700 mb-6">Use your index finger to point at the correct mystery box.</p>
+                <div class="flex items-center justify-center space-x-4 mb-8">
+                    <span class="text-4xl">👆</span>
+                    <p class="text-left text-gray-600 font-medium">Hold your finger on the answer for 1 second to open the gift box!</p>
+                </div>
+                <button onclick="startGame()" class="px-8 py-4 bg-blue-500 hover:bg-blue-600 text-white rounded-full text-2xl font-bold transition transform hover:scale-105 shadow-lg pointer-events-auto">
+                    START GAME
+                </button>
+            </div>
+        </div>
+
+        <!-- Game Screen HUD -->
+        <div id="screen-game" class="hidden w-full h-full">
+            <!-- Top Bar -->
+            <div class="absolute top-4 left-1/2 transform -translate-x-1/2 glass-panel px-8 py-4 text-center z-30 w-3/4 max-w-3xl">
+                <div class="flex justify-between items-center mb-2">
+                    <div class="text-xl font-bold text-gray-700">Time: <span id="time-display" class="text-red-500">60</span>s</div>
+                    <div class="text-xl font-bold text-gray-700">Score: <span id="score-display" class="text-green-500">0</span></div>
+                </div>
+                <h2 id="question-text" class="text-2xl md:text-3xl font-extrabold text-gray-800">Question appears here?</h2>
+            </div>
+
+            <!-- 4 Mystery Gift Boxes -->
+            <!-- Top Left -->
+            <div id="box-0" class="gift-box box-tl" data-index="0">
+                <div class="gift-icon">🎁</div>
+                <div class="gift-text" id="option-0">Option 1</div>
+            </div>
+            <!-- Top Right -->
+            <div id="box-1" class="gift-box box-tr" data-index="1">
+                <div class="gift-icon">🎁</div>
+                <div class="gift-text" id="option-1">Option 2</div>
+            </div>
+            <!-- Bottom Left -->
+            <div id="box-2" class="gift-box box-bl" data-index="2">
+                <div class="gift-icon">🎁</div>
+                <div class="gift-text" id="option-2">Option 3</div>
+            </div>
+            <!-- Bottom Right -->
+            <div id="box-3" class="gift-box box-br" data-index="3">
+                <div class="gift-icon">🎁</div>
+                <div class="gift-text" id="option-3">Option 4</div>
+            </div>
+        </div>
+
+        <!-- End Screen -->
+        <div id="screen-end" class="absolute inset-0 flex items-center justify-center bg-gray-900 bg-opacity-90 z-40 hidden">
+            <div class="glass-panel p-12 max-w-lg text-center">
+                <h1 class="text-5xl font-extrabold text-blue-600 mb-4">Game Over!</h1>
+                <p class="text-2xl text-gray-700 mb-2">Final Score:</p>
+                <div id="final-score" class="text-6xl font-black text-green-500 mb-6">0</div>
+                
+                <p class="text-lg text-gray-600 mb-8">High Score: <span id="high-score" class="font-bold">0</span></p>
+
+                <button onclick="showStartScreen()" class="px-8 py-4 bg-orange-500 hover:bg-orange-600 text-white rounded-full text-xl font-bold transition transform hover:scale-105 shadow-lg pointer-events-auto">
+                    Play Again
+                </button>
+            </div>
+        </div>
+
+    </div>
+
+<script>
+    // --- Audio Synthesis System (No external files) ---
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    const audioCtx = new AudioContext();
+
+    function playTone(freq, type, duration, vol = 0.1) {
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = type;
+        osc.frequency.value = freq;
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+        gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.00001, audioCtx.currentTime + duration);
+        osc.stop(audioCtx.currentTime + duration);
+    }
+
+    const soundEffects = {
+        correct: () => {
+            playTone(523.25, 'sine', 0.1, 0.2); // C5
+            setTimeout(() => playTone(659.25, 'sine', 0.1, 0.2), 100); // E5
+            setTimeout(() => playTone(783.99, 'sine', 0.2, 0.2), 200); // G5
+        },
+        wrong: () => {
+            playTone(200, 'sawtooth', 0.3, 0.2);
+            setTimeout(() => playTone(150, 'sawtooth', 0.3, 0.2), 150);
+        },
+        tick: () => {
+            playTone(800, 'sine', 0.05, 0.05);
+        },
+        open: () => {
+            playTone(400, 'square', 0.1, 0.1);
+        }
+    };
+
+    // --- Game Data (Based on Pic1 & Pic2) ---
+    const questions = [
+        {
+            q: "What does the man say in picture 1?",
+            options: ["Pass me the box, please.", "Watch out!", "I'm sorry.", "It's OK."],
+            answer: 0
+        },
+        {
+            q: "Who says 'Watch out!' in picture 2?",
+            options: ["Flash", "Mum", "The delivery man", "The friends"],
+            answer: 2
+        },
+        {
+            q: "What did Flash forget in picture 4?",
+            options: ["Her pencil case", "Her notebook", "Her ruler", "Her bag"],
+            answer: 1
+        },
+        {
+            q: "What do Flash's friends give her in picture 6?",
+            options: ["Apples and box", "Notebook and bag", "Pencil case, ruler, book", "A fat rat"],
+            answer: 2
+        },
+        {
+            q: "Who says 'My bag!' in picture 8?",
+            options: ["The parrot", "The boy", "Mum", "Flash"],
+            answer: 3
+        },
+        {
+            q: "Phonics focus: What is inside the black bag?",
+            options: ["A black cat", "A fat rat", "A red apple", "A notebook"],
+            answer: 1
+        }
+    ];
+
+    // --- Game State Variables ---
+    let currentState = 'loading'; // loading, start, playing, gameover
+    let currentQIndex = 0;
+    let score = 0;
+    let timeLeft = 60;
+    let timerInterval = null;
+    let isProcessingAnswer = false;
+
+    // --- Cursor & Dwell Variables ---
+    let fingerPos = { x: -100, y: -100 };
+    let hoveringBoxIndex = -1;
+    let dwellStartTime = 0;
+    const DWELL_TIME_MS = 1000; // 1 second to select
+
+    // --- DOM Elements ---
+    const cursorLayer = document.getElementById('cursor-layer');
+    const cursorCtx = cursorLayer.getContext('2d');
+    const boxes = [
+        document.getElementById('box-0'),
+        document.getElementById('box-1'),
+        document.getElementById('box-2'),
+        document.getElementById('box-3')
+    ];
+    
+    // Resize cursor canvas to match window
+    function resizeCanvas() {
+        cursorLayer.width = window.innerWidth;
+        cursorLayer.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    // --- MediaPipe Setup ---
+    const videoElement = document.getElementById('input_video');
+    const canvasElement = document.getElementById('output_canvas');
+    const canvasCtx = canvasElement.getContext('2d');
+
+    const hands = new Hands({locateFile: (file) => {
+        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+    }});
+
+    hands.setOptions({
+        maxNumHands: 1,
+        modelComplexity: 1,
+        minDetectionConfidence: 0.7,
+        minTrackingConfidence: 0.7
+    });
+
+    hands.onResults(onResults);
+
+    const camera = new Camera(videoElement, {
+        onFrame: async () => {
+            await hands.send({image: videoElement});
+        },
+        width: 1280,
+        height: 720
+    });
+
+    camera.start().then(() => {
+        document.getElementById('screen-loading').classList.add('hidden');
+        showStartScreen();
+    }).catch(err => {
+        alert("Camera error: " + err.message + ". Please allow camera access.");
+    });
+
+    // --- Hand Tracking Results ---
+    function onResults(results) {
+        // Draw video feed on background canvas (Mirrored)
+        canvasCtx.save();
+        canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+        // Ensure canvas internal resolution matches display size for correct aspect
+        if (canvasElement.width !== videoElement.videoWidth) {
+            canvasElement.width = videoElement.videoWidth;
+            canvasElement.height = videoElement.videoHeight;
+        }
+        // Draw mirrored
+        canvasCtx.translate(canvasElement.width, 0);
+        canvasCtx.scale(-1, 1);
+        canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+        canvasCtx.restore();
+
+        // Process landmarks
+        if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+            const landmarks = results.multiHandLandmarks[0];
+            const indexTip = landmarks[8]; // Index finger tip
+            
+            // Map normalized coordinates to screen coordinates
+            // Since camera is mirrored, we invert X.
+            const screenX = (1 - indexTip.x) * window.innerWidth;
+            const screenY = indexTip.y * window.innerHeight;
+            
+            // Smooth cursor movement (optional, but raw is fine for now)
+            fingerPos.x = screenX;
+            fingerPos.y = screenY;
+
+            if (currentState === 'playing' && !isProcessingAnswer) {
+                checkCollisions();
+            }
+        } else {
+            fingerPos.x = -100;
+            fingerPos.y = -100;
+            hoveringBoxIndex = -1;
+            dwellStartTime = 0;
+        }
+    }
+
+    // --- Collision & Dwell Logic ---
+    function checkCollisions() {
+        let currentlyHovering = -1;
+
+        // Check if finger is over any box
+        for (let i = 0; i < boxes.length; i++) {
+            const rect = boxes[i].getBoundingClientRect();
+            if (fingerPos.x >= rect.left && fingerPos.x <= rect.right &&
+                fingerPos.y >= rect.top && fingerPos.y <= rect.bottom) {
+                currentlyHovering = i;
+                break;
+            }
+        }
+
+        // Logic for hover state changes
+        if (currentlyHovering !== hoveringBoxIndex) {
+            // Reset previous hover styling
+            if (hoveringBoxIndex !== -1) {
+                boxes[hoveringBoxIndex].classList.remove('active-hover');
+            }
+            
+            hoveringBoxIndex = currentlyHovering;
+            
+            if (hoveringBoxIndex !== -1) {
+                boxes[hoveringBoxIndex].classList.add('active-hover');
+                dwellStartTime = performance.now();
+                soundEffects.tick();
+            } else {
+                dwellStartTime = 0;
+            }
+        } else if (hoveringBoxIndex !== -1) {
+            // Still hovering same box, check dwell time
+            const elapsedTime = performance.now() - dwellStartTime;
+            if (elapsedTime >= DWELL_TIME_MS) {
+                selectAnswer(hoveringBoxIndex);
+            }
+        }
+    }
+
+    // --- Cursor Rendering Loop ---
+    function drawCursor() {
+        cursorCtx.clearRect(0, 0, cursorLayer.width, cursorLayer.height);
+
+        if (fingerPos.x >= 0 && currentState === 'playing') {
+            const x = fingerPos.x;
+            const y = fingerPos.y;
+
+            // Draw outer dot
+            cursorCtx.beginPath();
+            cursorCtx.arc(x, y, 15, 0, 2 * Math.PI);
+            cursorCtx.fillStyle = 'rgba(237, 137, 54, 0.8)'; // Orange
+            cursorCtx.fill();
+            cursorCtx.lineWidth = 3;
+            cursorCtx.strokeStyle = 'white';
+            cursorCtx.stroke();
+
+            // Draw dwell progress ring
+            if (hoveringBoxIndex !== -1 && !isProcessingAnswer) {
+                const elapsedTime = performance.now() - dwellStartTime;
+                const progress = Math.min(elapsedTime / DWELL_TIME_MS, 1);
+                
+                cursorCtx.beginPath();
+                cursorCtx.arc(x, y, 25, -Math.PI / 2, (-Math.PI / 2) + (2 * Math.PI * progress));
+                cursorCtx.lineWidth = 6;
+                cursorCtx.strokeStyle = '#48bb78'; // Green progress
+                cursorCtx.stroke();
+            }
+        }
+        requestAnimationFrame(drawCursor);
+    }
+    drawCursor(); // Start cursor loop
+
+    // --- Game Logic ---
+
+    function showStartScreen() {
+        currentState = 'start';
+        document.getElementById('screen-end').classList.add('hidden');
+        document.getElementById('screen-game').classList.add('hidden');
+        document.getElementById('screen-start').classList.remove('hidden');
+    }
+
+    function startGame() {
+        if(audioCtx.state === 'suspended') audioCtx.resume();
+        
+        currentState = 'playing';
+        score = 0;
+        timeLeft = 60; // 60 seconds game
+        currentQIndex = 0;
+        isProcessingAnswer = false;
+
+        document.getElementById('score-display').innerText = score;
+        document.getElementById('time-display').innerText = timeLeft;
+        
+        document.getElementById('screen-start').classList.add('hidden');
+        document.getElementById('screen-game').classList.remove('hidden');
+
+        // Shuffle questions
+        questions.sort(() => Math.random() - 0.5);
+
+        loadQuestion();
+
+        if (timerInterval) clearInterval(timerInterval);
+        timerInterval = setInterval(() => {
+            timeLeft--;
+            document.getElementById('time-display').innerText = timeLeft;
+            if (timeLeft <= 0) {
+                endGame();
+            }
+        }, 1000);
+    }
+
+    function loadQuestion() {
+        if (currentQIndex >= questions.length) {
+            endGame(); // Finished all questions
+            return;
+        }
+
+        const q = questions[currentQIndex];
+        document.getElementById('question-text').innerText = q.q;
+
+        // Reset boxes
+        boxes.forEach((box, index) => {
+            box.classList.remove('correct', 'wrong', 'active-hover', 'animate-pop');
+            box.querySelector('.gift-icon').innerText = '🎁';
+            box.querySelector('.gift-text').innerText = q.options[index];
+            box.style.opacity = '1';
+        });
+        
+        hoveringBoxIndex = -1;
+        dwellStartTime = 0;
+        isProcessingAnswer = false;
+    }
+
+    function selectAnswer(selectedIndex) {
+        if (isProcessingAnswer) return;
+        isProcessingAnswer = true;
+        
+        const q = questions[currentQIndex];
+        const selectedBox = boxes[selectedIndex];
+        
+        // Remove hover state
+        selectedBox.classList.remove('active-hover');
+
+        // Animate Open
+        selectedBox.classList.add('animate-pop');
+        soundEffects.open();
+
+        if (selectedIndex === q.answer) {
+            // Correct
+            setTimeout(() => {
+                selectedBox.querySelector('.gift-icon').innerText = '🎉';
+                selectedBox.classList.add('correct');
+                soundEffects.correct();
+                score += 10 + Math.floor(timeLeft / 10); // Time bonus
+                document.getElementById('score-display').innerText = score;
+            }, 250);
+        } else {
+            // Wrong
+            setTimeout(() => {
+                selectedBox.querySelector('.gift-icon').innerText = '📦'; // Empty box
+                selectedBox.classList.add('wrong');
+                soundEffects.wrong();
+                
+                // Highlight correct answer
+                const correctBox = boxes[q.answer];
+                correctBox.querySelector('.gift-icon').innerText = '🎉';
+                correctBox.classList.add('correct');
+            }, 250);
+        }
+
+        // Wait, then load next question
+        setTimeout(() => {
+            currentQIndex++;
+            loadQuestion();
+        }, 2000);
+    }
+
+    function endGame() {
+        clearInterval(timerInterval);
+        currentState = 'gameover';
+        
+        document.getElementById('screen-game').classList.add('hidden');
+        document.getElementById('screen-end').classList.remove('hidden');
+        
+        document.getElementById('final-score').innerText = score;
+
+        // High score logic
+        let highScore = localStorage.getItem('watchOutFlashHighScore') || 0;
+        if (score > highScore) {
+            highScore = score;
+            localStorage.setItem('watchOutFlashHighScore', highScore);
+        }
+        document.getElementById('high-score').innerText = highScore;
+    }
+
+</script>
+</body>
+</html>
